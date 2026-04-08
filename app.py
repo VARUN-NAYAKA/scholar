@@ -17,7 +17,22 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 from core.config import DATA_DIR
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+
+# Load API key: Streamlit Cloud secrets > .env > empty
+def _get_api_key():
+    """Get API key from Streamlit secrets (cloud) or .env (local)."""
+    # 1. Try Streamlit Cloud secrets
+    try:
+        key = st.secrets.get("GEMINI_API_KEY", "")
+        if key:
+            os.environ["GEMINI_API_KEY"] = key
+            return key
+    except Exception:
+        pass
+    # 2. Fall back to .env / environment variable
+    return os.environ.get("GEMINI_API_KEY", "")
+
+GEMINI_API_KEY = _get_api_key()
 
 # ──────────────────────────────────────────────
 # Page Config
@@ -26,7 +41,7 @@ st.set_page_config(
     page_title="ScholAR — Research Intelligence Agent",
     page_icon="🎓",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
 # ──────────────────────────────────────────────
