@@ -324,61 +324,96 @@ if should_run:
         # ── Resolve the effective topic based on mode ──
         effective_topic = topic
 
-        # MODE 1: Author Search → fetch papers first, then use research themes as topic
+        # MODE 1: Author Search → list all papers by the author
         if search_mode == "👤 Author Search" and author_name:
             with st.spinner(f"🔍 Searching for papers by **{author_name}**..."):
                 try:
                     from apis.semantic_scholar import search_author_papers
-                    author_papers = search_author_papers(author_name, limit=50)
+                    author_papers = search_author_papers(author_name, limit=100)
 
                     if not author_papers:
                         st.error(f"No papers found for author '{author_name}'. Try a different spelling.")
                         st.session_state.running = False
                         st.stop()
 
-                    # Use author's top research themes as the topic
-                    all_fields = []
-                    for p in author_papers:
-                        all_fields.extend(p.fields_of_study)
-                        all_fields.extend(p.topics)
-                    from collections import Counter
-                    top_themes = [t for t, _ in Counter(all_fields).most_common(3)] if all_fields else [author_name]
-                    effective_topic = f"{author_name} research: {', '.join(top_themes)}"
-                    st.info(f"📚 Found **{len(author_papers)}** papers by **{author_name}**. Analyzing: *{effective_topic}*")
+                    # Store author results directly
+                    st.session_state.result = {
+                        "mode": "author",
+                        "author_name": author_name,
+                        "author_papers": author_papers,
+                    }
+                    st.session_state.running = False
+                    st.rerun()
                 except Exception as e:
                     st.error(f"Author search failed: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
                     st.session_state.running = False
                     st.stop()
 
-        # MODE 2: PDF Upload → extract seed topic from paper
+        # MODE 2: PDF Upload → deep paper analysis + find similar work
         elif search_mode == "📄 PDF Upload" and uploaded_pdf:
-            with st.spinner("📄 Extracting research topic from PDF..."):
-                try:
-                    from core.pdf_utils import extract_text_from_pdf, extract_seed_topic
+            try:
+                from core.pdf_utils import extract_text_from_pdf
+                from core.paper_analyzer import analyze_paper_deeply, generate_comparison_report
 
+                with st.spinner("📄 Reading PDF..."):
                     pdf_text = extract_text_from_pdf(uploaded_pdf)
                     if not pdf_text:
                         st.error("Could not extract text from this PDF. It may be scanned/image-based.")
                         st.session_state.running = False
                         st.stop()
 
-                    seed = extract_seed_topic(pdf_text)
-                    effective_topic = seed["topic"]
+                with st.spinner("🧠 Analyzing paper in depth..."):
+                    paper_analysis = analyze_paper_deeply(pdf_text)
 
-                    st.info(
-                        f"📄 **Detected Paper:** {seed['title']}\n\n"
-                        f"🔬 **Research Topic:** {effective_topic}\n\n"
-                        f"🏷️ **Keywords:** {', '.join(seed['keywords']) if seed['keywords'] else 'Auto-detected'}"
-                    )
-                except Exception as e:
-                    st.error(f"PDF processing failed: {e}")
-                    st.session_state.running = False
-                    st.stop()
+                # Use the extracted search queries to find similar papers
+                search_queries = paper_analysis.get("search_queries", [])
+                if not search_queries:
+                    search_queries = [paper_analysis.get("title", "research paper")]
 
-        if not effective_topic:
-            st.error("Could not determine a research topic. Please try again.")
-            st.session_state.running = False
-        else:
+                similar_papers = []
+                with st.spinner("🔍 Finding similar papers in the literature..."):
+                    from apis.semantic_scholar import search_papers as ss_search
+                    for query in search_queries[:3]:
+                        try:
+                            results = ss_search(query, limit=10)
+                            similar_papers.extend(results)
+                        except Exception:
+                            pass
+                    # Deduplicate
+                    seen = set()
+                    unique_papers = []
+                    for p in similar_papers:
+                        if p.paper_id not in seen:
+                            seen.add(p.paper_id)
+                            unique_papers.append(p)
+                    similar_papers = unique_papers[:20]
+
+                comparison = ""
+                if similar_papers:
+                    with st.spinner("📊 Generating comparison report..."):
+                        comparison = generate_comparison_report(pdf_text, similar_papers)
+
+                st.session_state.result = {
+                    "mode": "pdf",
+                    "paper_analysis": paper_analysis,
+                    "similar_papers": similar_papers,
+                    "comparison_report": comparison,
+                    "pdf_text": pdf_text,
+                }
+                st.session_state.running = False
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"PDF processing failed: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+                st.session_state.running = False
+                st.stop()
+
+        # MODE 3: Topic Search → normal pipeline
+        elif effective_topic:
             progress_bar = st.progress(0, text="Initializing ScholAR...")
 
             try:
@@ -399,6 +434,7 @@ if should_run:
                 except Exception as e:
                     print(f"History save error: {e}")
 
+                result["mode"] = "topic"
                 st.session_state.result = result
                 st.session_state.running = False
                 progress_bar.progress(100, text="✅ Complete!")
@@ -409,6 +445,9 @@ if should_run:
                 st.session_state.running = False
                 import traceback
                 st.code(traceback.format_exc())
+        else:
+            st.error("Please enter a topic, author name, or upload a PDF.")
+            st.session_state.running = False
 
 
 # ──────────────────────────────────────────────
@@ -416,12 +455,182 @@ if should_run:
 # ──────────────────────────────────────────────
 if st.session_state.result:
     result = st.session_state.result
-    report = result.get("report")
-    analysis = result.get("analysis")
-    papers = result.get("scored_papers", [])
-    kg = result.get("knowledge_graph")
+    result_mode = result.get("mode", "topic")
 
-    if report:
+    # ════════════════════════════════════════════
+    # AUTHOR MODE DISPLAY
+    # ════════════════════════════════════════════
+    if result_mode == "author":
+        author_papers = result.get("author_papers", [])
+        author_name_display = result.get("author_name", "Unknown")
+
+        st.success(f"✅ Found **{len(author_papers)}** papers by **{author_name_display}**")
+
+        # Sort by year descending
+        author_papers.sort(key=lambda p: p.year or 0, reverse=True)
+
+        # Stats
+        st.markdown("---")
+        total_citations = sum(p.citation_count for p in author_papers)
+        years = [p.year for p in author_papers if p.year]
+        year_range = f"{min(years)}–{max(years)}" if years else "N/A"
+
+        cols = st.columns(4)
+        stat_data = [
+            ("📄", "Total Papers", len(author_papers)),
+            ("📊", "Total Citations", total_citations),
+            ("📅", "Year Range", year_range),
+            ("⭐", "Avg Citations", total_citations // max(len(author_papers), 1)),
+        ]
+        for col, (icon, label, value) in zip(cols, stat_data):
+            with col:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div style="font-size: 1.5rem;">{icon}</div>
+                    <div class="metric-value">{value}</div>
+                    <div class="metric-label">{label}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        st.markdown("---")
+        st.markdown(f'<div class="section-header">📄 Papers by {author_name_display}</div>', unsafe_allow_html=True)
+
+        import pandas as pd
+        paper_data = []
+        for p in author_papers:
+            url = p.get_download_url()
+            paper_data.append({
+                "Title": p.title,
+                "Year": p.year or "N/A",
+                "Citations": p.citation_count,
+                "Venue": (p.venue or "N/A")[:40],
+                "Link": url if url else "—",
+            })
+
+        df = pd.DataFrame(paper_data)
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True,
+            height=600,
+            column_config={
+                "Title": st.column_config.TextColumn("Title", width="large"),
+                "Link": st.column_config.LinkColumn("📥 Link", display_text="Open"),
+            },
+        )
+
+    # ════════════════════════════════════════════
+    # PDF MODE DISPLAY
+    # ════════════════════════════════════════════
+    elif result_mode == "pdf":
+        paper_analysis = result.get("paper_analysis", {})
+        similar_papers = result.get("similar_papers", [])
+        comparison = result.get("comparison_report", "")
+
+        st.success(f"✅ Paper analyzed: **{paper_analysis.get('title', 'Unknown')}**")
+
+        tab_summary, tab_analysis_pc, tab_findings, tab_trends, tab_compare, tab_similar = st.tabs([
+            "📝 Summary", "⚖️ Pros & Cons", "🔬 Key Findings",
+            "📈 Trends", "🔄 Comparison", "📚 Similar Papers",
+        ])
+
+        with tab_summary:
+            st.markdown(f'<div class="section-header">📝 Paper Summary</div>', unsafe_allow_html=True)
+            st.markdown(paper_analysis.get("summary", "No summary available."))
+            if paper_analysis.get("methodology"):
+                st.markdown("### 🔧 Methodology")
+                st.markdown(paper_analysis["methodology"])
+            if paper_analysis.get("contributions"):
+                st.markdown("### 🎯 Key Contributions")
+                for c in paper_analysis["contributions"]:
+                    st.markdown(f"- {c}")
+
+        with tab_analysis_pc:
+            st.markdown(f'<div class="section-header">⚖️ Strengths & Weaknesses</div>', unsafe_allow_html=True)
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("### ✅ Strengths")
+                for pro in paper_analysis.get("pros", []):
+                    st.markdown(f"""
+                    <div style="background:#f0fdf4; border-left:4px solid #22c55e; padding:10px 14px; margin:6px 0; border-radius:0 8px 8px 0; color:#166534;">
+                        ✓ {pro}
+                    </div>
+                    """, unsafe_allow_html=True)
+                if not paper_analysis.get("pros"):
+                    st.info("No specific strengths identified.")
+            with col2:
+                st.markdown("### ❌ Weaknesses")
+                for con in paper_analysis.get("cons", []):
+                    st.markdown(f"""
+                    <div style="background:#fef2f2; border-left:4px solid #ef4444; padding:10px 14px; margin:6px 0; border-radius:0 8px 8px 0; color:#991b1b;">
+                        ✗ {con}
+                    </div>
+                    """, unsafe_allow_html=True)
+                if not paper_analysis.get("cons"):
+                    st.info("No specific weaknesses identified.")
+
+        with tab_findings:
+            st.markdown(f'<div class="section-header">🔬 Key Findings</div>', unsafe_allow_html=True)
+            for i, finding in enumerate(paper_analysis.get("key_findings", []), 1):
+                st.markdown(f"**{i}.** {finding}")
+            if paper_analysis.get("implications"):
+                st.markdown("### 🌍 Practical Implications")
+                for imp in paper_analysis["implications"]:
+                    st.markdown(f"- {imp}")
+
+        with tab_trends:
+            st.markdown(f'<div class="section-header">📈 Trends & Evolution</div>', unsafe_allow_html=True)
+            for trend in paper_analysis.get("trends", []):
+                st.markdown(f"- {trend}")
+            if not paper_analysis.get("trends"):
+                st.info("No specific trends mentioned in this paper.")
+
+        with tab_compare:
+            st.markdown(f'<div class="section-header">🔄 Comparison with Related Work</div>', unsafe_allow_html=True)
+            if comparison:
+                st.markdown(comparison)
+            else:
+                st.info("Comparison report not available.")
+
+        with tab_similar:
+            st.markdown(f'<div class="section-header">📚 Similar Papers Found</div>', unsafe_allow_html=True)
+            if similar_papers:
+                import pandas as pd
+                similar_data = []
+                for p in similar_papers[:20]:
+                    url = p.get_download_url()
+                    similar_data.append({
+                        "Title": p.title[:80],
+                        "Year": p.year or "N/A",
+                        "Citations": p.citation_count,
+                        "Venue": (p.venue or "N/A")[:30],
+                        "Link": url if url else "—",
+                    })
+                df = pd.DataFrame(similar_data)
+                st.dataframe(
+                    df, use_container_width=True, hide_index=True,
+                    column_config={
+                        "Title": st.column_config.TextColumn("Title", width="large"),
+                        "Link": st.column_config.LinkColumn("📥 Link", display_text="Open"),
+                    },
+                )
+            else:
+                st.info("No similar papers found.")
+
+    # ════════════════════════════════════════════
+    # TOPIC MODE DISPLAY (existing)
+    # ════════════════════════════════════════════
+    elif result_mode == "topic":
+        report = result.get("report")
+        analysis = result.get("analysis")
+        papers = result.get("scored_papers", [])
+        kg = result.get("knowledge_graph")
+
+    if result_mode == "topic" and result.get("report"):
+        report = result["report"]
+        analysis = result.get("analysis")
+        papers = result.get("scored_papers", [])
+        kg = result.get("knowledge_graph")
         st.success(f"✅ Analysis complete! Reviewed **{report.total_papers_analyzed}** papers.")
 
         # ── Metrics Row ──
