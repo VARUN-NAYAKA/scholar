@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+data/chroma_db/
+data/cache/
+data/*.html
+data/*.pdf
+data/*.db
+*.egg-info/
+dist/
+build/
+.streamlit/secrets.toml
