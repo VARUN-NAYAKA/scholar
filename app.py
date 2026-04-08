@@ -766,34 +766,26 @@ if st.session_state.result:
 
         # ────── Tab 4: Research Gaps ──────
         with tab_gaps:
-            st.markdown('<div class="section-header">🔍 Research Gaps & Future Directions</div>', unsafe_allow_html=True)
+            st.markdown("### 🔍 Research Gaps & Future Directions")
             st.markdown("*Algorithmically detected gaps in the research landscape — areas where more work is needed.*")
 
             if analysis and analysis.gaps:
-                import html as html_module
                 for i, gap in enumerate(analysis.gaps, 1):
-                    confidence_color = "#e94560" if gap.confidence > 0.7 else "#f59e0b" if gap.confidence > 0.5 else "#6C63FF"
-                    gap_desc = html_module.escape(gap.description)
-                    gap_topics = html_module.escape(', '.join(gap.related_topics[:4]))
-                    st.markdown(f"""
-                    <div class="gap-card">
-                        <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-                            <div>
-                                <strong style="color:#1e293b; font-size:1.1rem;">Gap {i}</strong>
-                                <span style="background:{confidence_color}; color:white; padding:2px 10px; border-radius:12px; font-size:0.75rem; margin-left:8px;">
-                                    {gap.confidence:.0%} confidence
-                                </span>
-                            </div>
-                        </div>
-                        <p style="color:#334155; margin:0.8rem 0; font-size:0.95rem; line-height:1.6;">
-                            {gap_desc}
-                        </p>
-                        <div style="margin-top:0.5rem;">
-                            <strong style="color:#64748b; font-size:0.85rem;">Related Topics:</strong>
-                            <span style="color:#6C63FF; font-size:0.85rem;">{gap_topics}</span>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    with st.container(border=True):
+                        col_label, col_conf = st.columns([8, 2])
+                        with col_label:
+                            st.markdown(f"**Gap {i}**")
+                        with col_conf:
+                            conf_pct = f"{gap.confidence:.0%}"
+                            if gap.confidence > 0.7:
+                                st.error(f"🔴 {conf_pct} confidence")
+                            elif gap.confidence > 0.5:
+                                st.warning(f"🟡 {conf_pct} confidence")
+                            else:
+                                st.info(f"🔵 {conf_pct} confidence")
+
+                        st.markdown(gap.description)
+                        st.caption(f"**Related Topics:** {', '.join(gap.related_topics[:4])}")
 
                     if gap.suggested_directions:
                         with st.expander(f"💡 Suggested Research Directions for Gap {i}"):
@@ -804,54 +796,43 @@ if st.session_state.result:
 
         # ────── Tab 5: Top 3 Recommended Papers ──────
         with tab_recs:
-            st.markdown('<div class="section-header">🏆 ScholAR\'s Top Picks</div>', unsafe_allow_html=True)
+            st.markdown("### 🏆 ScholAR's Top Picks")
             st.markdown(
                 "*These papers are ranked using a composite score of **relevance** (topic match), "
                 "**citations** (community impact), and **PageRank centrality** (structural importance in the knowledge graph).*"
             )
 
             if report.top_recommendations:
-                import html as html_module
                 for i, rec in enumerate(report.top_recommendations, 1):
                     medal = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else "📄"
                     paper = rec.paper
 
-                    # Escape all dynamic content
-                    safe_title = html_module.escape(paper.title)
-                    safe_authors = html_module.escape(', '.join(a.name for a in paper.authors[:3]))
-                    safe_venue = html_module.escape(paper.venue) if paper.venue else ''
-                    safe_reason = html_module.escape(rec.reason)
-                    et_al = ' et al.' if len(paper.authors) > 3 else ''
+                    with st.container(border=True):
+                        col_medal, col_info, col_score = st.columns([0.5, 8, 1.5])
+                        with col_medal:
+                            st.markdown(f"<span style='font-size:2.5rem;'>{medal}</span>", unsafe_allow_html=True)
+                        with col_info:
+                            st.markdown(f"**{paper.title}**")
+                            authors_str = ', '.join(a.name for a in paper.authors[:3])
+                            if len(paper.authors) > 3:
+                                authors_str += ' et al.'
+                            st.caption(f"{authors_str} · {paper.year or 'N/A'} · {paper.citation_count} citations{' · ' + paper.venue if paper.venue else ''}")
+                        with col_score:
+                            st.metric("Score", f"{rec.confidence:.0f}%")
 
-                    st.markdown(f"""
-                    <div class="rec-card">
-                        <div style="display:flex; justify-content:space-between; align-items:center;">
-                            <span style="font-size:2rem;">{medal}</span>
-                            <span style="color:#6C63FF; font-size:1.6rem; font-weight:bold;">{rec.confidence:.0f}%</span>
-                        </div>
-                        <h3 style="color:#1e293b; margin:0.5rem 0; font-size:1.15rem;">{safe_title}</h3>
-                        <p style="color:#64748b; font-size:0.9rem;">
-                            {safe_authors}{et_al}
-                            · {paper.year or 'N/A'} · {paper.citation_count} citations
-                            {' · ' + safe_venue if safe_venue else ''}
-                        </p>
-                        <div class="confidence-bar">
-                            <div class="confidence-fill" style="width:{rec.confidence}%;"></div>
-                        </div>
-                        <p style="color:#334155; font-size:0.9rem; margin-top:0.8rem; line-height:1.5;">
-                            <strong>Why ScholAR recommends this:</strong> {safe_reason}
-                        </p>
-                    </div>
-                    """, unsafe_allow_html=True)
+                        st.progress(rec.confidence / 100)
+                        st.markdown(f"**Why ScholAR recommends this:** {rec.reason}")
 
-                    # Paper link
-                    url = paper.get_download_url()
-                    if url:
-                        st.link_button(f"📎 Open Paper", url)
-                    
-                    # Abstract preview
+                        url = paper.get_download_url()
+                        col_link, col_abs, _ = st.columns([1, 1, 4])
+                        with col_link:
+                            if url:
+                                st.link_button("📎 Open Paper", url)
+                        with col_abs:
+                            pass
+
                     if paper.abstract:
-                        with st.expander("📖 Read Abstract"):
+                        with st.expander(f"📖 Read Abstract — {paper.title[:50]}..."):
                             st.markdown(paper.abstract)
             else:
                 st.info("No recommendations available.")
