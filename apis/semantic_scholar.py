@@ -167,13 +167,64 @@ def _parse_paper(data: dict) -> Optional[Paper]:
 
 def search_author_papers(author_name: str, limit: int = 50) -> list[Paper]:
     """
-    Search for an author by name and return their papers.
-    Uses two-step process: 1) Find author ID, 2) Fetch their papers.
-    Falls back to keyword search if author API fails.
+    Multi-source author search with fuzzy matching.
+    Strategy:
+      1. Semantic Scholar Author API
+      2. OpenAlex Author API (very robust, handles name variations)
+      3. Semantic Scholar paper search with author name
+      4. OpenAlex paper search with author name
+    Results are combined and deduplicated.
     """
     console.print(f"[magenta]Searching for author: '{author_name}'[/magenta]")
 
-    # Step 1: Find the author
+    all_papers = []
+
+    # ── Strategy 1: Semantic Scholar Author API ──
+    ss_papers = _ss_author_search(author_name, limit)
+    if ss_papers:
+        console.print(f"[green]SemanticScholar Author API:[/green] {len(ss_papers)} papers")
+        all_papers.extend(ss_papers)
+
+    # ── Strategy 2: OpenAlex Author API (best for fuzzy/uncommon names) ──
+    oa_papers = _openalex_author_search(author_name, limit)
+    if oa_papers:
+        console.print(f"[green]OpenAlex Author API:[/green] {len(oa_papers)} papers")
+        all_papers.extend(oa_papers)
+
+    # ── Strategy 3: Semantic Scholar paper search with author name  ──
+    if len(all_papers) < 5:
+        console.print(f"[yellow]Trying SS paper search for '{author_name}'...[/yellow]")
+        ss_keyword = search_papers(author_name, limit=limit)
+        # Filter to papers that actually have this author (fuzzy)
+        ss_keyword = _filter_by_author(ss_keyword, author_name)
+        all_papers.extend(ss_keyword)
+
+    # ── Strategy 4: OpenAlex paper search with author filter ──
+    if len(all_papers) < 5:
+        console.print(f"[yellow]Trying OpenAlex paper search for '{author_name}'...[/yellow]")
+        try:
+            from apis.openalex import search_papers as oa_search
+            oa_keyword = oa_search(author_name, limit=limit)
+            oa_keyword = _filter_by_author(oa_keyword, author_name)
+            all_papers.extend(oa_keyword)
+        except Exception as e:
+            console.print(f"[red]OpenAlex paper search error: {e}[/red]")
+
+    # Deduplicate by title (normalized)
+    seen_titles = set()
+    unique_papers = []
+    for p in all_papers:
+        norm_title = p.title.lower().strip()
+        if norm_title not in seen_titles:
+            seen_titles.add(norm_title)
+            unique_papers.append(p)
+
+    console.print(f"[green]Author '{author_name}':[/green] Total {len(unique_papers)} unique papers")
+    return unique_papers[:limit]
+
+
+def _ss_author_search(author_name: str, limit: int) -> list[Paper]:
+    """Try Semantic Scholar Author Search API."""
     _rate_limit()
     try:
         resp = requests.get(
@@ -185,29 +236,26 @@ def search_author_papers(author_name: str, limit: int = 50) -> list[Paper]:
         resp.raise_for_status()
         data = resp.json()
     except requests.RequestException as e:
-        console.print(f"[red]Author search API error: {e}[/red]")
-        return _author_fallback(author_name, limit)
+        console.print(f"[red]SS Author API error: {e}[/red]")
+        return []
 
     authors_found = data.get("data", [])
     if not authors_found:
-        console.print(f"[yellow]No authors found, trying fallback search[/yellow]")
-        return _author_fallback(author_name, limit)
+        return []
 
-    # Pick the first exact match (Semantic Scholar returns best match first)
-    author = authors_found[0]
-    author_id = author.get("authorId")
-    author_display = author.get("name", author_name)
-    console.print(f"[green]Found:[/green] {author_display} (ID: {author_id})")
+    # Pick best match using fuzzy name comparison
+    best_author = _pick_best_author(authors_found, author_name)
+    author_id = best_author.get("authorId")
+    author_display = best_author.get("name", author_name)
+    console.print(f"[green]SS Found:[/green] {author_display} (ID: {author_id})")
 
     if not author_id:
-        return _author_fallback(author_name, limit)
+        return []
 
-    # Step 2: Fetch their papers
     _rate_limit()
     fields = (
         "paperId,title,abstract,authors,year,citationCount,"
-        "referenceCount,venue,externalIds,url,tldr,fieldsOfStudy,"
-        "citations.paperId,references.paperId"
+        "referenceCount,venue,externalIds,url,fieldsOfStudy"
     )
 
     try:
@@ -220,8 +268,8 @@ def search_author_papers(author_name: str, limit: int = 50) -> list[Paper]:
         resp.raise_for_status()
         data = resp.json()
     except requests.RequestException as e:
-        console.print(f"[red]Author papers fetch error: {e}[/red]")
-        return _author_fallback(author_name, limit)
+        console.print(f"[red]SS papers fetch error: {e}[/red]")
+        return []
 
     papers = []
     for item in data.get("data", []):
@@ -229,21 +277,143 @@ def search_author_papers(author_name: str, limit: int = 50) -> list[Paper]:
         if paper:
             papers.append(paper)
 
-    console.print(f"[green]Author '{author_display}':[/green] Found {len(papers)} papers")
+    return papers[:limit]
 
-    if not papers:
-        return _author_fallback(author_name, limit)
+
+def _openalex_author_search(author_name: str, limit: int) -> list[Paper]:
+    """Search OpenAlex for an author and return their works. Very robust for
+    fuzzy/uncommon names since OpenAlex indexes 250M+ works."""
+    try:
+        resp = requests.get(
+            "https://api.openalex.org/authors",
+            params={"search": author_name, "per_page": 5},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException as e:
+        console.print(f"[red]OpenAlex Author API error: {e}[/red]")
+        return []
+
+    authors = data.get("results", [])
+    if not authors:
+        return []
+
+    # Pick best match using fuzzy name comparison
+    best = _pick_best_openalex_author(authors, author_name)
+    oa_id = best.get("id", "")
+    display_name = best.get("display_name", author_name)
+    console.print(f"[green]OpenAlex Found:[/green] {display_name} (ID: {oa_id})")
+
+    if not oa_id:
+        return []
+
+    # Fetch works by this author
+    try:
+        resp = requests.get(
+            "https://api.openalex.org/works",
+            params={
+                "filter": f"authorships.author.id:{oa_id}",
+                "per_page": min(limit, 100),
+                "sort": "cited_by_count:desc",
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException as e:
+        console.print(f"[red]OpenAlex works fetch error: {e}[/red]")
+        return []
+
+    from apis.openalex import _parse_work
+    papers = []
+    for item in data.get("results", []):
+        paper = _parse_work(item)
+        if paper:
+            papers.append(paper)
 
     return papers[:limit]
 
 
-def _author_fallback(author_name: str, limit: int) -> list[Paper]:
-    """Fallback: search for papers by author name as keyword."""
-    console.print(f"[yellow]Using fallback: searching papers with author name[/yellow]")
-    papers = search_papers(author_name, limit=limit)
-    if not papers:
-        # Try with quotes
-        papers = search_papers(f'"{author_name}"', limit=limit)
-    return papers
+def _pick_best_author(authors: list, query_name: str) -> dict:
+    """Pick the best matching author from Semantic Scholar results using fuzzy matching."""
+    query_lower = query_name.lower().strip()
+    query_parts = set(query_lower.split())
+
+    best = authors[0]
+    best_score = 0
+
+    for author in authors:
+        name = (author.get("name") or "").lower()
+        name_parts = set(name.split())
+
+        # Count matching name parts
+        overlap = len(query_parts & name_parts)
+        total = max(len(query_parts), 1)
+        score = overlap / total
+
+        # Bonus for exact match
+        if name == query_lower:
+            score = 2.0
+        # Bonus for substring match
+        elif query_lower in name or name in query_lower:
+            score += 0.5
+
+        if score > best_score:
+            best_score = score
+            best = author
+
+    return best
 
 
+def _pick_best_openalex_author(authors: list, query_name: str) -> dict:
+    """Pick the best matching author from OpenAlex results using fuzzy matching."""
+    query_lower = query_name.lower().strip()
+    query_parts = set(query_lower.split())
+
+    best = authors[0]
+    best_score = 0
+
+    for author in authors:
+        name = (author.get("display_name") or "").lower()
+        name_parts = set(name.split())
+
+        overlap = len(query_parts & name_parts)
+        total = max(len(query_parts), 1)
+        score = overlap / total
+
+        # Bonus for exact match
+        if name == query_lower:
+            score = 2.0
+        elif query_lower in name or name in query_lower:
+            score += 0.5
+
+        # Bonus for higher works count (more likely to be the right person)
+        works_count = author.get("works_count", 0)
+        if works_count > 50:
+            score += 0.3
+        elif works_count > 10:
+            score += 0.1
+
+        if score > best_score:
+            best_score = score
+            best = author
+
+    return best
+
+
+def _filter_by_author(papers: list[Paper], author_name: str) -> list[Paper]:
+    """Filter papers to only include those with a matching author (fuzzy)."""
+    query_parts = set(author_name.lower().split())
+    filtered = []
+
+    for paper in papers:
+        for author in paper.authors:
+            name_parts = set(author.name.lower().split())
+            overlap = len(query_parts & name_parts)
+            # If at least half the name parts match, keep it
+            if overlap >= max(len(query_parts) // 2, 1):
+                filtered.append(paper)
+                break
+
+    return filtered
