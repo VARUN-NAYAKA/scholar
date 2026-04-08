@@ -163,3 +163,69 @@ def _parse_paper(data: dict) -> Optional[Paper]:
         tldr=tldr,
         fields_of_study=data.get("fieldsOfStudy") or [],
     )
+
+
+def search_author_papers(author_name: str, limit: int = 50) -> list[Paper]:
+    """
+    Search for an author by name and return their papers.
+    Uses Semantic Scholar Author Search API.
+    """
+    AUTHOR_SEARCH_URL = f"{BASE_URL}/author/search"
+
+    _rate_limit()
+
+    try:
+        resp = requests.get(
+            AUTHOR_SEARCH_URL,
+            params={"query": author_name, "limit": 5},
+            headers=HEADERS,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException as e:
+        console.print(f"[red]Author search error: {e}[/red]")
+        return []
+
+    authors_found = data.get("data", [])
+    if not authors_found:
+        console.print(f"[yellow]No authors found for '{author_name}'[/yellow]")
+        return []
+
+    # Take the top matching author
+    author_id = authors_found[0].get("authorId")
+    author_display = authors_found[0].get("name", author_name)
+    console.print(f"[green]Found author:[/green] {author_display} (ID: {author_id})")
+
+    # Fetch their papers
+    AUTHOR_PAPERS_URL = f"{BASE_URL}/author/{author_id}/papers"
+    fields = (
+        "paperId,title,abstract,authors,year,citationCount,"
+        "referenceCount,venue,externalIds,url,tldr,fieldsOfStudy,"
+        "citations.paperId,references.paperId"
+    )
+
+    _rate_limit()
+
+    try:
+        resp = requests.get(
+            AUTHOR_PAPERS_URL,
+            params={"fields": fields, "limit": min(limit, 100)},
+            headers=HEADERS,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException as e:
+        console.print(f"[red]Author papers error: {e}[/red]")
+        return []
+
+    papers = []
+    for item in data.get("data", []):
+        paper = _parse_paper(item)
+        if paper:
+            papers.append(paper)
+
+    console.print(f"[green]Author '{author_display}':[/green] Found {len(papers)} papers")
+    return papers[:limit]
+

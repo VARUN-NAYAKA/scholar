@@ -259,26 +259,63 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-col1, col2 = st.columns([4, 1])
-with col1:
-    topic = st.text_input(
-        "🔬 Enter a research topic or paper title",
-        placeholder="e.g., LLM hallucination mitigation, transformer attention mechanisms...",
-        label_visibility="collapsed",
-    )
-with col2:
-    run_button = st.button(
-        "🚀 Run ScholAR",
-        type="primary",
-        use_container_width=True,
-        disabled=st.session_state.running,
-    )
+# ──────────────────────────────────────────────
+# Search Mode Selection
+# ──────────────────────────────────────────────
+search_mode = st.radio(
+    "Choose research mode:",
+    ["🔬 Topic Search", "👤 Author Search", "📄 PDF Upload"],
+    horizontal=True,
+    label_visibility="collapsed",
+)
+
+topic = ""
+uploaded_pdf = None
+author_name = ""
+
+if search_mode == "🔬 Topic Search":
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        topic = st.text_input(
+            "🔬 Enter a research topic",
+            placeholder="e.g., LLM hallucination mitigation, transformer attention mechanisms...",
+            label_visibility="collapsed",
+        )
+    with col2:
+        run_button = st.button("🚀 Run ScholAR", type="primary", use_container_width=True, disabled=st.session_state.running)
+
+elif search_mode == "👤 Author Search":
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        author_name = st.text_input(
+            "👤 Enter researcher name",
+            placeholder="e.g., Geoffrey Hinton, Yann LeCun, Fei-Fei Li...",
+            label_visibility="collapsed",
+        )
+    with col2:
+        run_button = st.button("🔍 Search Author", type="primary", use_container_width=True, disabled=st.session_state.running)
+
+elif search_mode == "📄 PDF Upload":
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        uploaded_pdf = st.file_uploader(
+            "Upload a research paper (PDF)",
+            type=["pdf"],
+            help="Upload a paper and ScholAR will analyze it, find related work, and generate a literature review.",
+        )
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        run_button = st.button("📊 Analyze Paper", type="primary", use_container_width=True, disabled=st.session_state.running)
+else:
+    run_button = False
 
 
 # ──────────────────────────────────────────────
 # Run Agent
 # ──────────────────────────────────────────────
-if run_button and topic:
+should_run = run_button and (topic or author_name or uploaded_pdf)
+
+if should_run:
     if not ACTIVE_API_KEY:
         st.error("⚠️ No Gemini API Key found. Add one in the sidebar, .env file, or Streamlit Cloud Secrets.")
     else:
@@ -288,36 +325,94 @@ if run_button and topic:
         st.session_state.logs = []
         st.session_state.result = None
 
-        progress_bar = st.progress(0, text="Initializing ScholAR...")
+        # ── Resolve the effective topic based on mode ──
+        effective_topic = topic
 
-        try:
-            from agents.orchestrator import run_scholar
-            import core.config as config
+        # MODE 1: Author Search → fetch papers first, then use research themes as topic
+        if search_mode == "👤 Author Search" and author_name:
+            with st.spinner(f"🔍 Searching for papers by **{author_name}**..."):
+                try:
+                    from apis.semantic_scholar import search_author_papers
+                    author_papers = search_author_papers(author_name, limit=50)
 
-            config.MAX_ITERATIONS = max_iterations
-            config.MIN_PAPERS_FOR_ANALYSIS = min_papers
-            config.SIMILARITY_THRESHOLD = similarity_threshold
+                    if not author_papers:
+                        st.error(f"No papers found for author '{author_name}'. Try a different spelling.")
+                        st.session_state.running = False
+                        st.stop()
 
-            with st.spinner("🧠 ScholAR is thinking autonomously..."):
-                result = run_scholar(topic)
+                    # Use author's top research themes as the topic
+                    all_fields = []
+                    for p in author_papers:
+                        all_fields.extend(p.fields_of_study)
+                        all_fields.extend(p.topics)
+                    from collections import Counter
+                    top_themes = [t for t, _ in Counter(all_fields).most_common(3)] if all_fields else [author_name]
+                    effective_topic = f"{author_name} research: {', '.join(top_themes)}"
+                    st.info(f"📚 Found **{len(author_papers)}** papers by **{author_name}**. Analyzing: *{effective_topic}*")
+                except Exception as e:
+                    st.error(f"Author search failed: {e}")
+                    st.session_state.running = False
+                    st.stop()
 
-            # Save to history
+        # MODE 2: PDF Upload → extract seed topic from paper
+        elif search_mode == "📄 PDF Upload" and uploaded_pdf:
+            with st.spinner("📄 Extracting research topic from PDF..."):
+                try:
+                    from core.pdf_utils import extract_text_from_pdf, extract_seed_topic
+
+                    pdf_text = extract_text_from_pdf(uploaded_pdf)
+                    if not pdf_text:
+                        st.error("Could not extract text from this PDF. It may be scanned/image-based.")
+                        st.session_state.running = False
+                        st.stop()
+
+                    seed = extract_seed_topic(pdf_text)
+                    effective_topic = seed["topic"]
+
+                    st.info(
+                        f"📄 **Detected Paper:** {seed['title']}\n\n"
+                        f"🔬 **Research Topic:** {effective_topic}\n\n"
+                        f"🏷️ **Keywords:** {', '.join(seed['keywords']) if seed['keywords'] else 'Auto-detected'}"
+                    )
+                except Exception as e:
+                    st.error(f"PDF processing failed: {e}")
+                    st.session_state.running = False
+                    st.stop()
+
+        if not effective_topic:
+            st.error("Could not determine a research topic. Please try again.")
+            st.session_state.running = False
+        else:
+            progress_bar = st.progress(0, text="Initializing ScholAR...")
+
             try:
-                from core.history import save_search
-                save_search(topic, result)
+                from agents.orchestrator import run_scholar
+                import core.config as config
+
+                config.MAX_ITERATIONS = max_iterations
+                config.MIN_PAPERS_FOR_ANALYSIS = min_papers
+                config.SIMILARITY_THRESHOLD = similarity_threshold
+
+                with st.spinner("🧠 ScholAR is thinking autonomously..."):
+                    result = run_scholar(effective_topic)
+
+                # Save to history
+                try:
+                    from core.history import save_search
+                    save_search(effective_topic, result)
+                except Exception as e:
+                    print(f"History save error: {e}")
+
+                st.session_state.result = result
+                st.session_state.running = False
+                progress_bar.progress(100, text="✅ Complete!")
+                st.rerun()
+
             except Exception as e:
-                print(f"History save error: {e}")
-
-            st.session_state.result = result
-            st.session_state.running = False
-            progress_bar.progress(100, text="✅ Complete!")
-            st.rerun()
-
-        except Exception as e:
-            st.error(f"❌ Error: {e}")
-            st.session_state.running = False
-            import traceback
-            st.code(traceback.format_exc())
+                st.error(f"❌ Error: {e}")
+                st.session_state.running = False
+                import traceback
+                st.code(traceback.format_exc())
 
 
 # ──────────────────────────────────────────────
