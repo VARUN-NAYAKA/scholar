@@ -2,8 +2,10 @@
 
 > From research topic to complete literature review in minutes.
 
-ScholAR is an **autonomous AI agent** that takes a research topic as input and automatically:
+ScholAR is an **autonomous AI agent** that takes a research topic, author name, or uploaded PDF as input and automatically:
 - 🔍 **Searches** 4 academic APIs (Semantic Scholar, ArXiv, OpenAlex, CrossRef)
+- 👤 **Finds** all papers by a specific researcher
+- 📄 **Analyzes** uploaded PDFs to seed related research discovery
 - 🕸️ **Builds** an interactive knowledge graph of related research
 - 📊 **Analyzes** clusters, trends, gaps, and contradictions
 - 📝 **Generates** a complete literature review report
@@ -13,7 +15,7 @@ ScholAR is an **autonomous AI agent** that takes a research topic as input and a
 
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_USERNAME/scholar.git
+git clone https://github.com/VARUN-NAYAKA/scholar.git
 cd scholar
 
 # Create virtual environment
@@ -51,7 +53,8 @@ ScholAR
 │   ├── config.py           # Settings + environment
 │   ├── models.py           # Pydantic data models
 │   ├── prompts.py          # LLM prompt templates
-│   └── history.py          # Search history backend
+│   ├── history.py          # Search history backend
+│   └── pdf_utils.py        # PDF text extraction + seed topic
 └── graph/
     ├── builder.py           # NetworkX knowledge graph
     ├── algorithms.py        # Louvain, PageRank, centrality
@@ -80,6 +83,7 @@ ScholAR
 
 ## 📸 Features
 
+- **3 Research Modes**: Topic Search, Author Search, PDF Upload
 - **Premium Dark UI** with glassmorphism design
 - **Interactive Knowledge Graph** (PyVis)
 - **Publication Trend Charts** (Plotly)
@@ -87,6 +91,7 @@ ScholAR
 - **Top 3 Paper Recommendations** with reasoning
 - **PDF Report Export**
 - **Search History** persistence
+- **PDF Paper Analysis** — upload any paper to discover related work
 
 ## 🛠️ Tech Stack
 
