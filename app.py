@@ -770,8 +770,11 @@ if st.session_state.result:
             st.markdown("*Algorithmically detected gaps in the research landscape — areas where more work is needed.*")
 
             if analysis and analysis.gaps:
+                import html as html_module
                 for i, gap in enumerate(analysis.gaps, 1):
                     confidence_color = "#e94560" if gap.confidence > 0.7 else "#f59e0b" if gap.confidence > 0.5 else "#6C63FF"
+                    gap_desc = html_module.escape(gap.description)
+                    gap_topics = html_module.escape(', '.join(gap.related_topics[:4]))
                     st.markdown(f"""
                     <div class="gap-card">
                         <div style="display:flex; justify-content:space-between; align-items:flex-start;">
@@ -783,11 +786,11 @@ if st.session_state.result:
                             </div>
                         </div>
                         <p style="color:#334155; margin:0.8rem 0; font-size:0.95rem; line-height:1.6;">
-                            {gap.description}
+                            {gap_desc}
                         </p>
                         <div style="margin-top:0.5rem;">
                             <strong style="color:#64748b; font-size:0.85rem;">Related Topics:</strong>
-                            <span style="color:#6C63FF; font-size:0.85rem;">{', '.join(gap.related_topics[:4])}</span>
+                            <span style="color:#6C63FF; font-size:0.85rem;">{gap_topics}</span>
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
@@ -808,9 +811,17 @@ if st.session_state.result:
             )
 
             if report.top_recommendations:
+                import html as html_module
                 for i, rec in enumerate(report.top_recommendations, 1):
                     medal = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else "📄"
                     paper = rec.paper
+
+                    # Escape all dynamic content
+                    safe_title = html_module.escape(paper.title)
+                    safe_authors = html_module.escape(', '.join(a.name for a in paper.authors[:3]))
+                    safe_venue = html_module.escape(paper.venue) if paper.venue else ''
+                    safe_reason = html_module.escape(rec.reason)
+                    et_al = ' et al.' if len(paper.authors) > 3 else ''
 
                     st.markdown(f"""
                     <div class="rec-card">
@@ -818,18 +829,17 @@ if st.session_state.result:
                             <span style="font-size:2rem;">{medal}</span>
                             <span style="color:#6C63FF; font-size:1.6rem; font-weight:bold;">{rec.confidence:.0f}%</span>
                         </div>
-                        <h3 style="color:#1e293b; margin:0.5rem 0; font-size:1.15rem;">{paper.title}</h3>
+                        <h3 style="color:#1e293b; margin:0.5rem 0; font-size:1.15rem;">{safe_title}</h3>
                         <p style="color:#64748b; font-size:0.9rem;">
-                            {', '.join(a.name for a in paper.authors[:3])} 
-                            {'et al.' if len(paper.authors) > 3 else ''} 
+                            {safe_authors}{et_al}
                             · {paper.year or 'N/A'} · {paper.citation_count} citations
-                            {' · ' + paper.venue if paper.venue else ''}
+                            {' · ' + safe_venue if safe_venue else ''}
                         </p>
                         <div class="confidence-bar">
                             <div class="confidence-fill" style="width:{rec.confidence}%;"></div>
                         </div>
                         <p style="color:#334155; font-size:0.9rem; margin-top:0.8rem; line-height:1.5;">
-                            <strong>Why ScholAR recommends this:</strong> {rec.reason}
+                            <strong>Why ScholAR recommends this:</strong> {safe_reason}
                         </p>
                     </div>
                     """, unsafe_allow_html=True)
