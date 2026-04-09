@@ -376,6 +376,7 @@ if should_run:
 
                 similar_papers = []
                 with st.spinner("🔍 Finding similar papers in the literature..."):
+                    # Source 1: Semantic Scholar
                     from apis.semantic_scholar import search_papers as ss_search
                     for query in search_queries[:3]:
                         try:
@@ -383,14 +384,25 @@ if should_run:
                             similar_papers.extend(results)
                         except Exception:
                             pass
-                    # Deduplicate
-                    seen = set()
+
+                    # Source 2: OpenAlex (fallback / supplement)
+                    from apis.openalex import search_papers as oa_search
+                    for query in search_queries[:2]:
+                        try:
+                            results = oa_search(query, limit=10)
+                            similar_papers.extend(results)
+                        except Exception:
+                            pass
+
+                    # Deduplicate by title
+                    seen_titles = set()
                     unique_papers = []
                     for p in similar_papers:
-                        if p.paper_id not in seen:
-                            seen.add(p.paper_id)
+                        norm = p.title.lower().strip()
+                        if norm not in seen_titles:
+                            seen_titles.add(norm)
                             unique_papers.append(p)
-                    similar_papers = unique_papers[:20]
+                    similar_papers = sorted(unique_papers, key=lambda p: p.citation_count, reverse=True)[:30]
 
                 comparison = ""
                 if similar_papers:
@@ -531,13 +543,29 @@ if st.session_state.result:
 
         st.success(f"✅ Paper analyzed: **{paper_analysis.get('title', 'Unknown')}**")
 
+        # Quick stats row
+        st.markdown("---")
+        stat_cols = st.columns(4)
+        with stat_cols[0]:
+            st.metric("📄 Similar Papers", len(similar_papers))
+        with stat_cols[1]:
+            total_cites = sum(p.citation_count for p in similar_papers)
+            st.metric("📊 Total Citations", f"{total_cites:,}")
+        with stat_cols[2]:
+            years = [p.year for p in similar_papers if p.year]
+            st.metric("📅 Year Range", f"{min(years)}–{max(years)}" if years else "N/A")
+        with stat_cols[3]:
+            pros = len(paper_analysis.get("pros", []))
+            cons = len(paper_analysis.get("cons", []))
+            st.metric("⚖️ Pros / Cons", f"{pros} / {cons}")
+
         tab_summary, tab_analysis_pc, tab_findings, tab_trends, tab_compare, tab_similar = st.tabs([
             "📝 Summary", "⚖️ Pros & Cons", "🔬 Key Findings",
-            "📈 Trends", "🔄 Comparison", "📚 Similar Papers",
+            "📈 Trends & Visuals", "🔄 Comparison", "📚 Top Picks & Papers",
         ])
 
         with tab_summary:
-            st.markdown(f'<div class="section-header">📝 Paper Summary</div>', unsafe_allow_html=True)
+            st.markdown("### 📝 Paper Summary")
             st.markdown(paper_analysis.get("summary", "No summary available."))
             if paper_analysis.get("methodology"):
                 st.markdown("### 🔧 Methodology")
@@ -548,58 +576,171 @@ if st.session_state.result:
                     st.markdown(f"- {c}")
 
         with tab_analysis_pc:
-            st.markdown(f'<div class="section-header">⚖️ Strengths & Weaknesses</div>', unsafe_allow_html=True)
+            st.markdown("### ⚖️ Strengths & Weaknesses")
             col1, col2 = st.columns(2)
             with col1:
-                st.markdown("### ✅ Strengths")
+                st.markdown("#### ✅ Strengths")
                 for pro in paper_analysis.get("pros", []):
-                    st.markdown(f"""
-                    <div style="background:#f0fdf4; border-left:4px solid #22c55e; padding:10px 14px; margin:6px 0; border-radius:0 8px 8px 0; color:#166534;">
-                        ✓ {pro}
-                    </div>
-                    """, unsafe_allow_html=True)
+                    with st.container(border=True):
+                        st.markdown(f"✓ {pro}")
                 if not paper_analysis.get("pros"):
                     st.info("No specific strengths identified.")
             with col2:
-                st.markdown("### ❌ Weaknesses")
+                st.markdown("#### ❌ Weaknesses")
                 for con in paper_analysis.get("cons", []):
-                    st.markdown(f"""
-                    <div style="background:#fef2f2; border-left:4px solid #ef4444; padding:10px 14px; margin:6px 0; border-radius:0 8px 8px 0; color:#991b1b;">
-                        ✗ {con}
-                    </div>
-                    """, unsafe_allow_html=True)
+                    with st.container(border=True):
+                        st.markdown(f"✗ {con}")
                 if not paper_analysis.get("cons"):
                     st.info("No specific weaknesses identified.")
 
         with tab_findings:
-            st.markdown(f'<div class="section-header">🔬 Key Findings</div>', unsafe_allow_html=True)
+            st.markdown("### 🔬 Key Findings")
             for i, finding in enumerate(paper_analysis.get("key_findings", []), 1):
-                st.markdown(f"**{i}.** {finding}")
+                with st.container(border=True):
+                    st.markdown(f"**Finding {i}:** {finding}")
             if paper_analysis.get("implications"):
                 st.markdown("### 🌍 Practical Implications")
                 for imp in paper_analysis["implications"]:
                     st.markdown(f"- {imp}")
 
         with tab_trends:
-            st.markdown(f'<div class="section-header">📈 Trends & Evolution</div>', unsafe_allow_html=True)
-            for trend in paper_analysis.get("trends", []):
-                st.markdown(f"- {trend}")
-            if not paper_analysis.get("trends"):
+            st.markdown("### 📈 Trends & Evolution")
+            trends = paper_analysis.get("trends", [])
+            if trends:
+                for trend in trends:
+                    st.markdown(f"- {trend}")
+            else:
                 st.info("No specific trends mentioned in this paper.")
 
+            # Visualization: Citation distribution of similar papers by year
+            if similar_papers:
+                import plotly.express as px
+                import pandas as pd
+
+                st.markdown("---")
+                st.markdown("### 📊 Citation Landscape of Related Research")
+
+                year_data = [{"Year": p.year, "Citations": p.citation_count, "Title": p.title[:50]}
+                             for p in similar_papers if p.year and p.year > 1990]
+
+                if year_data:
+                    df_year = pd.DataFrame(year_data)
+
+                    # Scatter plot: citations over years
+                    fig_scatter = px.scatter(
+                        df_year, x="Year", y="Citations", size="Citations",
+                        hover_name="Title", color="Citations",
+                        color_continuous_scale="Viridis",
+                        title="Citation Impact Over Time",
+                    )
+                    fig_scatter.update_layout(
+                        template="plotly_white",
+                        font=dict(family="Inter"),
+                        plot_bgcolor="rgba(0,0,0,0)",
+                    )
+                    st.plotly_chart(fig_scatter, use_container_width=True)
+
+                    # Bar chart: papers per year
+                    year_counts = df_year.groupby("Year").size().reset_index(name="Papers")
+                    fig_bar = px.bar(
+                        year_counts, x="Year", y="Papers",
+                        title="Publication Trend of Related Papers",
+                        color="Papers", color_continuous_scale="Blues",
+                    )
+                    fig_bar.update_layout(
+                        template="plotly_white",
+                        font=dict(family="Inter"),
+                    )
+                    st.plotly_chart(fig_bar, use_container_width=True)
+
         with tab_compare:
-            st.markdown(f'<div class="section-header">🔄 Comparison with Related Work</div>', unsafe_allow_html=True)
+            st.markdown("### 🔄 Comparison with Related Work")
             if comparison:
                 st.markdown(comparison)
             else:
-                st.info("Comparison report not available.")
+                if similar_papers:
+                    st.warning("Comparison report generation was skipped. Re-run analysis to generate.")
+                else:
+                    st.info("No similar papers found to compare against.")
+
+            # Show a simple relationship map
+            if similar_papers:
+                st.markdown("---")
+                st.markdown("### 🕸️ Paper Relationship Map")
+                import plotly.graph_objects as go
+
+                paper_title = paper_analysis.get("title", "Your Paper")[:40]
+                nodes_x = [0]
+                nodes_y = [0]
+                node_labels = [paper_title]
+                node_sizes = [30]
+                edge_x = []
+                edge_y = []
+
+                import math
+                top_n = min(len(similar_papers), 12)
+                for i, sp in enumerate(similar_papers[:top_n]):
+                    angle = 2 * math.pi * i / top_n
+                    x = math.cos(angle) * (2 + (i % 2) * 0.5)
+                    y = math.sin(angle) * (2 + (i % 2) * 0.5)
+                    nodes_x.append(x)
+                    nodes_y.append(y)
+                    node_labels.append(sp.title[:35] + "...")
+                    node_sizes.append(max(8, min(sp.citation_count / 50, 25)))
+                    edge_x.extend([0, x, None])
+                    edge_y.extend([0, y, None])
+
+                fig_graph = go.Figure()
+                fig_graph.add_trace(go.Scatter(x=edge_x, y=edge_y, mode="lines",
+                    line=dict(width=1, color="#c4b5fd"), hoverinfo="none"))
+                fig_graph.add_trace(go.Scatter(
+                    x=nodes_x, y=nodes_y, mode="markers+text",
+                    marker=dict(size=node_sizes, color=["#6C63FF"] + ["#a78bfa"] * top_n,
+                                line=dict(width=1, color="white")),
+                    text=node_labels, textposition="top center",
+                    textfont=dict(size=9, color="#334155"),
+                    hoverinfo="text",
+                ))
+                fig_graph.update_layout(
+                    template="plotly_white", showlegend=False,
+                    xaxis=dict(visible=False), yaxis=dict(visible=False),
+                    height=500, margin=dict(l=20, r=20, t=30, b=20),
+                    title="Uploaded Paper → Related Research",
+                    font=dict(family="Inter"),
+                )
+                st.plotly_chart(fig_graph, use_container_width=True)
 
         with tab_similar:
-            st.markdown(f'<div class="section-header">📚 Similar Papers Found</div>', unsafe_allow_html=True)
+            st.markdown("### 🏆 Top Picks — Most Relevant Papers")
             if similar_papers:
+                # Top 3 by citations
+                top3 = sorted(similar_papers, key=lambda p: p.citation_count, reverse=True)[:3]
+                medals = ["🥇", "🥈", "🥉"]
+                for i, paper in enumerate(top3):
+                    with st.container(border=True):
+                        col_m, col_info, col_cites = st.columns([0.5, 8, 1.5])
+                        with col_m:
+                            st.markdown(f"<span style='font-size:2.5rem;'>{medals[i]}</span>", unsafe_allow_html=True)
+                        with col_info:
+                            st.markdown(f"**{paper.title}**")
+                            authors = ', '.join(a.name for a in paper.authors[:3])
+                            if len(paper.authors) > 3:
+                                authors += ' et al.'
+                            st.caption(f"{authors} · {paper.year or 'N/A'} · {paper.venue or 'N/A'}")
+                        with col_cites:
+                            st.metric("Citations", f"{paper.citation_count:,}")
+                        url = paper.get_download_url()
+                        if url:
+                            st.link_button("📎 Open Paper", url)
+                        if paper.abstract:
+                            with st.expander("📖 Read Abstract"):
+                                st.markdown(paper.abstract)
+
+                st.markdown("---")
+                st.markdown("### 📚 All Similar Papers")
                 import pandas as pd
                 similar_data = []
-                for p in similar_papers[:20]:
+                for p in similar_papers[:30]:
                     url = p.get_download_url()
                     similar_data.append({
                         "Title": p.title[:80],
@@ -610,7 +751,7 @@ if st.session_state.result:
                     })
                 df = pd.DataFrame(similar_data)
                 st.dataframe(
-                    df, use_container_width=True, hide_index=True,
+                    df, use_container_width=True, hide_index=True, height=500,
                     column_config={
                         "Title": st.column_config.TextColumn("Title", width="large"),
                         "Link": st.column_config.LinkColumn("📥 Link", display_text="Open"),
