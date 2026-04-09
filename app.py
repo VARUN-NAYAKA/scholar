@@ -190,22 +190,24 @@ if "logs" not in st.session_state:
 with st.sidebar:
     st.markdown("## ⚙️ Configuration")
 
-    # API key status indicator
-    if GEMINI_API_KEY:
-        st.success("✅ API Key loaded", icon="🔑")
-    else:
-        st.warning("⚠️ No default API Key found.")
-
-    # Optional custom API key override
+    # Optional custom API key override (shown FIRST for priority)
     custom_api_key = st.text_input(
         "🔑 Custom Gemini API Key (optional)",
         type="password",
         placeholder="Paste your own key to override default",
-        help="If provided, this key will be used instead of the default one.",
+        help="Your custom key gets top priority over the pre-configured default.",
     )
 
     # Resolve: custom > pre-provided
-    ACTIVE_API_KEY = custom_api_key.strip() if custom_api_key and custom_api_key.strip() else GEMINI_API_KEY
+    if custom_api_key and custom_api_key.strip():
+        ACTIVE_API_KEY = custom_api_key.strip()
+        st.success("✅ Using **your custom API key**", icon="🔑")
+    elif GEMINI_API_KEY:
+        ACTIVE_API_KEY = GEMINI_API_KEY
+        st.info("🔑 Using pre-configured API key")
+    else:
+        ACTIVE_API_KEY = ""
+        st.warning("⚠️ No API Key found. Enter one above.")
 
     st.markdown("---")
     st.markdown("### 🔧 Advanced Settings")
