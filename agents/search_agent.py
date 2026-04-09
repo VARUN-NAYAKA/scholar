@@ -23,7 +23,7 @@ from core.prompts import QUERY_EXPANSION_PROMPT
 from apis import semantic_scholar, arxiv_client, openalex, crossref
 from rich.console import Console
 
-console = Console()
+console = Console(force_terminal=True, legacy_windows=False)
 
 # LLM calls go through core.llm_utils.call_gemini (retry + fallback)
 
